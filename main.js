@@ -28,12 +28,14 @@ function main() {
 		program: shaderProgram,
 		attribLocations: {
 			vertexPosition: gl.getAttribLocation(shaderProgram, 'aVertexPosition'),
+			vertexNormal: gl.getAttribLocation(shaderProgram, 'aVertexNormal'),
 			vertexColor: gl.getAttribLocation(shaderProgram, 'aVertexColor'),
 			textureCoord: gl.getAttribLocation(shaderProgram, 'aTextureCoord'),
 		},
 		uniformLocations: {
 			projectionMatrix: gl.getUniformLocation(shaderProgram, 'uProjectionMatrix'),
 			modelViewMatrix: gl.getUniformLocation(shaderProgram, 'uModelViewMatrix'),
+			normalMatrix: gl.getUniformLocation(shaderProgram, 'uNormalMatrix'),
 			uSampler: gl.getUniformLocation(shaderProgram, 'uSampler'),
 		},
 	};
@@ -58,27 +60,44 @@ function main() {
 const vsSource = `
 	attribute vec4 aVertexPosition;
 	attribute vec4 aVertexColor;
+	attribute vec3 aVertexNormal;
 	attribute vec2 aTextureCoord;
 
+	uniform mat4 uNormalMatrix;
 	uniform mat4 uModelViewMatrix;
 	uniform mat4 uProjectionMatrix;
 
 	varying lowp vec4 vColor;
 	varying highp vec2 vTextureCoord;
+	varying highp vec3 vLighting;
 
 	void main() {
-	  gl_Position = uProjectionMatrix * uModelViewMatrix * aVertexPosition;
-	  vColor = aVertexColor;
-	  vTextureCoord = aTextureCoord;
+		gl_Position = uProjectionMatrix * uModelViewMatrix * aVertexPosition;
+		vColor = aVertexColor;
+		vTextureCoord = aTextureCoord;
+
+		// Apply lighting effect
+		highp vec3 ambientLight = vec3(0.2, 0.2, 0.2);
+		highp vec3 directionalLightColor = vec3(1, 1, 1);
+		highp vec3 directionalVector = normalize(vec3(0.85, 0.8, 0.75));
+
+		highp vec4 transformedNormal = uNormalMatrix * vec4(aVertexNormal, 1.0);
+
+		highp float directional = max(dot(transformedNormal.xyz, directionalVector), 0.0);
+
+		vLighting = ambientLight + (directionalLightColor * directional);
 	}
 `;
 const fsSource = `
 	varying lowp vec4 vColor;
 	varying highp vec2 vTextureCoord;
+	varying highp vec3 vLighting;
 
 	uniform sampler2D uSampler;
 	void main() {
-	  gl_FragColor = (texture2D(uSampler, vTextureCoord) + vColor) * 0.5;
+		// highp vec4 texelColor = (texture2D(uSampler, vTextureCoord) + vColor);
+		highp vec4 texelColor = texture2D(uSampler, vTextureCoord);
+		gl_FragColor = vec4(texelColor.rgb * vLighting, texelColor.a);;
 	}
 `;
 
@@ -273,8 +292,56 @@ function initBuffers(gl) {
 	gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(textureCoordinates),
 	            gl.STATIC_DRAW);
 
+// 面的法向量
+	// Set up the normals for the vertices, so that we can compute lighting.
+
+  const normalBuffer = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, normalBuffer);
+
+  const vertexNormals = [
+    // Front
+     0.0,  0.0,  1.0,
+     0.0,  0.0,  1.0,
+     0.0,  0.0,  1.0,
+     0.0,  0.0,  1.0,
+
+    // Back
+     0.0,  0.0, -1.0,
+     0.0,  0.0, -1.0,
+     0.0,  0.0, -1.0,
+     0.0,  0.0, -1.0,
+
+    // Top
+     0.0,  1.0,  0.0,
+     0.0,  1.0,  0.0,
+     0.0,  1.0,  0.0,
+     0.0,  1.0,  0.0,
+
+    // Bottom
+     0.0, -1.0,  0.0,
+     0.0, -1.0,  0.0,
+     0.0, -1.0,  0.0,
+     0.0, -1.0,  0.0,
+
+    // Right
+     1.0,  0.0,  0.0,
+     1.0,  0.0,  0.0,
+     1.0,  0.0,  0.0,
+     1.0,  0.0,  0.0,
+
+    // Left
+    -1.0,  0.0,  0.0,
+    -1.0,  0.0,  0.0,
+    -1.0,  0.0,  0.0,
+    -1.0,  0.0,  0.0
+  ];
+
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertexNormals),
+                gl.STATIC_DRAW);
+
 	return {
 		position: positionBuffer,
+		normal: normalBuffer,
 		color: colorBuffer,
     	indices: indexBuffer,
     	textureCoord: textureCoordBuffer,
@@ -286,7 +353,7 @@ function drawScene(gl, programInfo, buffers, texture, deltaTime) {
 	gl.clearColor(0.0, 0.0, 0.0, 1.0);  // Clear to black, fully opaque
 	gl.clearDepth(1.0);                 // Clear everything
 	gl.enable(gl.DEPTH_TEST);           // Enable depth testing
-	gl.depthFunc(gl.LEQUAL);            // Near things obscure far things
+	gl.depthFunc(gl.LEQUAL);            // Near things obscure far things	
 
 	// Clear the canvas before we start drawing on it.
 
@@ -317,7 +384,6 @@ function drawScene(gl, programInfo, buffers, texture, deltaTime) {
 	// the center of the scene.
 	const modelViewMatrix = mat4.create();
 
-	cubeRotation += deltaTime;
 	// Now move the drawing position a bit to where we want to
 	// start drawing the square.
 
@@ -331,6 +397,11 @@ function drawScene(gl, programInfo, buffers, texture, deltaTime) {
               [0, 0, 1]);       // axis to rotate around
 
 	mat4.rotate(modelViewMatrix, modelViewMatrix, cubeRotation * .7, [0, 1, 0]);
+
+
+	const normalMatrix = mat4.create();
+	  mat4.invert(normalMatrix, modelViewMatrix);
+	  mat4.transpose(normalMatrix, normalMatrix);
 
 	// Tell WebGL how to pull out the positions from the position
 	// buffer into the vertexPosition attribute.
@@ -373,10 +444,6 @@ function drawScene(gl, programInfo, buffers, texture, deltaTime) {
 		    programInfo.attribLocations.vertexColor);
 	}
 
-	// Tell WebGL which indices to use to index the vertices
-	gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, buffers.indices);
-
-
 	// tell webgl how to pull out the texture coordinates from buffer
 	{
 	    const num = 2; // every coordinate composed of 2 values
@@ -389,19 +456,32 @@ function drawScene(gl, programInfo, buffers, texture, deltaTime) {
 	    gl.enableVertexAttribArray(programInfo.attribLocations.textureCoord);
 	}
 
-	// Tell WebGL we want to affect texture unit 0
-	gl.activeTexture(gl.TEXTURE0);
+	// Tell WebGL how to pull out the normals from
+	// the normal buffer into the vertexNormal attribute.
+	{
+		const numComponents = 3;
+		const type = gl.FLOAT;
+		const normalize = false;
+		const stride = 0;
+		const offset = 0;
+		gl.bindBuffer(gl.ARRAY_BUFFER, buffers.normal);
+		gl.vertexAttribPointer(
+		    programInfo.attribLocations.vertexNormal,
+		    numComponents,
+		    type,
+		    normalize,
+		    stride,
+		    offset);
+		gl.enableVertexAttribArray(
+		    programInfo.attribLocations.vertexNormal);
+	}
 
-	// Bind the texture to texture unit 0
-	gl.bindTexture(gl.TEXTURE_2D, texture);
 
-	// Tell the shader we bound the texture to texture unit 0
-	gl.uniform1i(programInfo.uniformLocations.uSampler, 0);
+	// Tell WebGL which indices to use to index the vertices
+	gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, buffers.indices);
 
 	// Tell WebGL to use our program when drawing
-
 	gl.useProgram(programInfo.program);
-
 	// Set the shader uniforms
 
 	gl.uniformMatrix4fv(
@@ -412,6 +492,21 @@ function drawScene(gl, programInfo, buffers, texture, deltaTime) {
 		programInfo.uniformLocations.modelViewMatrix,
 		false,
 		modelViewMatrix);
+	gl.uniformMatrix4fv(
+      programInfo.uniformLocations.normalMatrix,
+      false,
+      normalMatrix);
+
+	// Tell WebGL we want to affect texture unit 0
+	gl.activeTexture(gl.TEXTURE0);
+
+	// Bind the texture to texture unit 0
+	gl.bindTexture(gl.TEXTURE_2D, texture);
+
+	// Tell the shader we bound the texture to texture unit 0
+	gl.uniform1i(programInfo.uniformLocations.uSampler, 0);
+
+	
 
 	// {
 	// 	const offset = 0;
@@ -424,6 +519,10 @@ function drawScene(gl, programInfo, buffers, texture, deltaTime) {
 		const offset = 0;
 		gl.drawElements(gl.TRIANGLES, vertexCount, type, offset);
 	}
+
+	// Update the rotation for the next draw
+
+	cubeRotation += deltaTime;
 }
 
 //
